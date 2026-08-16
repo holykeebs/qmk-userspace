@@ -66,6 +66,16 @@ enum hk_keycodes {
     // above). Bongocat is compiled into OLED builds by default (drop it with
     // BONGO_ENABLE=no). Saved with HK_SAVE.
     HK_BONGO_TOGGLE, // 0x7E0F
+
+    // Scrolls by one detent of a rotary encoder. Meant for encoder_map entries;
+    // these replace mousekey's MS_WHLU/MS_WHLD on boards with a scroll wheel.
+    // Mousekey sends one whole line per detent, which is the coarsest step a
+    // host can be given. These instead feed the pointing-device report, so a
+    // detent leaves as several sub-line (hires) steps, and they let the board
+    // drop ENCODER_MAP_KEY_DELAY to 0 — no wheel report is sent at key press
+    // time, so there's nothing for the delay to keep apart.
+    HK_ENCODER_SCROLL_UP,   // 0x7E10
+    HK_ENCODER_SCROLL_DOWN, // 0x7E11
 };
 
 #define HK_SAVE      HK_SAVE_SETTINGS
@@ -84,6 +94,8 @@ enum hk_keycodes {
 #define HK_AML_UP    HK_AUTO_MOUSE_TIMEOUT_UP
 #define HK_AML_DN    HK_AUTO_MOUSE_TIMEOUT_DOWN
 #define HK_BONGO_T   HK_BONGO_TOGGLE
+#define HK_ENC_SCR_U HK_ENCODER_SCROLL_UP
+#define HK_ENC_SCR_D HK_ENCODER_SCROLL_DOWN
 
 // Renders the secondary (peripheral) OLED. The weak default mirrors the master's
 // info panels (the state is split-synced); a board overrides it to show its own

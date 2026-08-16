@@ -636,6 +636,115 @@ void hk_process_mouse_report(const hk_pointer_state_t* pointer_state, report_mou
     g_hk_state.dirty = true;
 }
 
+#ifdef POINTING_DEVICE_ENABLE
+
+// Encoder scroll (HK_ENCODER_SCROLL_UP/DOWN).
+//
+// A rotary wheel bound to mousekey's MS_WHLU/MS_WHLD scrolls badly for two
+// reasons: mousekey sends one whole line per detent (the coarsest step there
+// is, so hires scrolling buys the encoder nothing), and encoder_map brackets
+// every detent with two ENCODER_MAP_KEY_DELAY waits that block the main loop —
+// matrix scan, pointing device and OLED included — while the wheel spins.
+//
+// So a detent only adds to this accumulator, and the pointing-device task
+// drains a fraction of it into each report: the line goes out as a run of
+// sub-line steps that the host can smooth, and nothing waits on anything.
+// Ball scroll settings don't apply here — the scroll throttle, scroll lock and
+// inversion all belong to ball travel; the wheel's direction is its keymap
+// entry (or, for a mirrored footprint, its pin_a/pin_b order).
+
+// Lines of scroll per detent, before acceleration.
+#ifndef HK_ENCODER_SCROLL_LINES
+#    define HK_ENCODER_SCROLL_LINES 1
+#endif
+
+// How much of the outstanding scroll is emitted per pointing-device report:
+// 1/2^shift of it. Larger spreads a detent over more reports (smoother, but
+// more tail after the wheel stops).
+#ifndef HK_ENCODER_SCROLL_DRAIN_SHIFT
+#    define HK_ENCODER_SCROLL_DRAIN_SHIFT 3
+#endif
+
+// Acceleration: detents arriving less than HK_ENCODER_SCROLL_ACCEL_MS apart
+// scale up, linearly, to HK_ENCODER_SCROLL_ACCEL_MAX times a lone detent. Set
+// the max to 1 to scroll a fixed amount per detent.
+#ifndef HK_ENCODER_SCROLL_ACCEL_MAX
+#    define HK_ENCODER_SCROLL_ACCEL_MAX 3
+#endif
+#ifndef HK_ENCODER_SCROLL_ACCEL_MS
+#    define HK_ENCODER_SCROLL_ACCEL_MS 100
+#endif
+
+// Scroll owed to the host, in the unit the report speaks: sub-line hires units
+// when hires scrolling is on, whole lines otherwise. Positive is up.
+static int32_t hk_encoder_scroll_pending = 0;
+
+static int32_t hk_encoder_scroll_units_per_line(void) {
+#ifdef POINTING_DEVICE_HIRES_SCROLL_ENABLE
+    return pointing_device_get_hires_scroll_resolution();
+#else
+    return 1;
+#endif
+}
+
+static void hk_encoder_scroll(bool up) {
+    const int32_t units = hk_encoder_scroll_units_per_line() * HK_ENCODER_SCROLL_LINES;
+    int32_t       step  = units;
+
+#if HK_ENCODER_SCROLL_ACCEL_MAX > 1
+    static uint32_t last_detent = 0;
+
+    const uint32_t gap = timer_elapsed32(last_detent);
+    if (gap < HK_ENCODER_SCROLL_ACCEL_MS) {
+        step += (units * (HK_ENCODER_SCROLL_ACCEL_MAX - 1) * (int32_t)(HK_ENCODER_SCROLL_ACCEL_MS - gap)) / HK_ENCODER_SCROLL_ACCEL_MS;
+    }
+    last_detent = timer_read32();
+#endif
+
+    hk_encoder_scroll_pending += up ? step : -step;
+}
+
+static void hk_encoder_scroll_drain(report_mouse_t* mouse_report) {
+    if (hk_encoder_scroll_pending == 0) {
+        return;
+    }
+
+    const int32_t remaining = hk_encoder_scroll_pending;
+    const int32_t magnitude = remaining < 0 ? -remaining : remaining;
+
+    // Draining a fraction rather than a fixed amount keeps both ends honest: a
+    // lone detent tapers off over a handful of reports, while the backlog from
+    // a fast spin empties proportionally faster, so the scroll never falls
+    // behind the wheel.
+    int32_t min_step = hk_encoder_scroll_units_per_line() >> HK_ENCODER_SCROLL_DRAIN_SHIFT;
+    if (min_step < 1) {
+        min_step = 1;
+    }
+
+    int32_t step = magnitude >> HK_ENCODER_SCROLL_DRAIN_SHIFT;
+    if (step < min_step) {
+        step = min_step;
+    }
+    if (step > magnitude) {
+        step = magnitude;
+    }
+    if (remaining < 0) {
+        step = -step;
+    }
+
+    hk_encoder_scroll_pending -= step;
+    mouse_report->v = CONSTRAIN_HV((int32_t)mouse_report->v + step);
+}
+
+#else // POINTING_DEVICE_ENABLE
+
+// No pointing-device report to ride on; the keycodes fall back to mousekey.
+static inline void hk_encoder_scroll_drain(report_mouse_t* mouse_report) {
+    (void)mouse_report;
+}
+
+#endif // POINTING_DEVICE_ENABLE
+
 #if defined(SPLIT_POINTING_ENABLE) && defined(POINTING_DEVICE_COMBINED)
 
 report_mouse_t pointing_device_task_combined_user(report_mouse_t left_report, report_mouse_t right_report) {
@@ -650,6 +759,7 @@ report_mouse_t pointing_device_task_combined_user(report_mouse_t left_report, re
     hk_process_mouse_report(&g_hk_state.peripheral, is_keyboard_left() ? &right_report : &left_report);
 
     report_mouse_t report = pointing_device_combine_reports(left_report, right_report);
+    hk_encoder_scroll_drain(&report);
     g_hk_state.display.last_mouse = report;
     return pointing_device_task_combined_keymap(report);
 }
@@ -663,6 +773,7 @@ report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
     }
 
     hk_process_mouse_report(&g_hk_state.main, &mouse_report);
+    hk_encoder_scroll_drain(&mouse_report);
     g_hk_state.display.last_mouse = mouse_report;
 
     return pointing_device_task_keymap(mouse_report);
@@ -820,6 +931,18 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record) {
                 hk_invert_scroll_direction(/*side_peripheral=*/has_shift_mod());
                 state_changed = true;
             }
+            break;
+
+        case HK_ENCODER_SCROLL_UP:
+        case HK_ENCODER_SCROLL_DOWN:
+            if (record->event.pressed) {
+#ifdef POINTING_DEVICE_ENABLE
+                hk_encoder_scroll(/*up=*/keycode == HK_ENCODER_SCROLL_UP);
+#elif defined(MOUSEKEY_ENABLE)
+                tap_code16(keycode == HK_ENCODER_SCROLL_UP ? MS_WHLU : MS_WHLD);
+#endif
+            }
+            propagate_event = false;
             break;
 
 #ifdef POINTING_DEVICE_AUTO_MOUSE_ENABLE
