@@ -61,6 +61,9 @@ static int16_t serialize_sensitivity(hk_pointer_kind kind, float value) {
 // definition) re-applies the CPI when sniping toggles.
 static void hk_apply_sensitivity(const hk_pointer_state_t* state, bool side_peripheral);
 
+// Defined below; forward-declared for init_state.
+static bool hk_active_side_peripheral(void);
+
 // A sensitivity of 0 multiplies that side's motion to nothing (scale_movement),
 // so the pointer still clicks and scrolls but never moves - invisible from the
 // outside and hard to trace back to a setting. The schema version and the kind
@@ -185,6 +188,7 @@ static hk_state_t init_state(void) {
         .setting_default_sensitivity = false,
         .setting_sniping_sensitivity = false,
         .setting_scroll_throttle = false,
+        .active_is_peripheral = false,
         .main = {
             .pointer_kind = POINTER_KIND_NONE,
             .cursor_mode = CURSOR_MODE_DEFAULT,
@@ -223,6 +227,8 @@ static hk_state_t init_state(void) {
     if (!state.is_main_side) {
         return state;
     }
+
+    state.active_is_peripheral = hk_active_side_peripheral();
 
     #if defined(HK_POINTING_DEVICE_MIDDLE_TPS65)
         state.main.pointer_kind = POINTER_KIND_TPS65;
@@ -349,6 +355,49 @@ static bool has_shift_mod(void) {
 #        else
     return mod_config(get_mods() | get_oneshot_mods()) & MOD_MASK_SHIFT;
 #        endif // NO_ACTION_ONESHOT
+}
+
+// Which half's pointer state the unshifted config keycodes (and the OLED
+// pointer panel) act on. Normally the master's: the modular boards pin the
+// master to the pointing-device half, so the master's device is always the
+// one in use, and shift selects the peripheral's.
+//
+// Boards that detect their ball(s) at runtime (HK_SPLIT_DETECT_POINTING) let
+// USB go in either half, so the master may have no ball while the peripheral
+// does — a keyball61plus plugged in on the ball-less half. The master's state
+// then belongs to a device that isn't there, and every unshifted keycode
+// (drag scroll, sniping, sensitivity...) silently configured that nothing.
+// So on those boards the half with no local device hands the default target
+// to the other half, and shift selects this (empty) one instead — the
+// convention stays "shift = the other half" whichever half USB is in.
+//
+// Followed live (housekeeping) rather than fixed at init: the local sensor may
+// only come up on a retry after boot.
+static bool hk_active_side_peripheral(void) {
+#ifdef HK_SPLIT_DETECT_POINTING
+    return !hk_local_pointing_present();
+#else
+    return false;
+#endif
+}
+
+#ifdef HK_SPLIT_DETECT_POINTING
+// Master-only. Re-evaluates the default target and syncs it to the peripheral
+// when it changes.
+static void hk_update_active_side(void) {
+    bool peripheral = hk_active_side_peripheral();
+    if (g_hk_state.active_is_peripheral != peripheral) {
+        printf("hk_update_active_side: config keycodes now target the %s half\n", peripheral ? "peripheral" : "main");
+        g_hk_state.active_is_peripheral = peripheral;
+        g_hk_state.dirty = true;
+    }
+}
+#endif
+
+// The half a config keycode targets: the active side by default, the other
+// one with shift held.
+static bool hk_target_side_peripheral(void) {
+    return has_shift_mod() != g_hk_state.active_is_peripheral;
 }
 
 __attribute__((weak)) report_mouse_t pointing_device_task_keymap(report_mouse_t mouse_report) {
@@ -859,13 +908,13 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record) {
             }
             if (record->event.pressed) {
                 if (g_hk_state.setting_default_sensitivity) {
-                    hk_cycle_pointer_default_sensitivity(/*forward=*/keycode == KC_UP, /*side_peripheral=*/has_shift_mod());
+                    hk_cycle_pointer_default_sensitivity(/*forward=*/keycode == KC_UP, /*side_peripheral=*/hk_target_side_peripheral());
                 }
                 else if (g_hk_state.setting_sniping_sensitivity) {
-                    hk_cycle_pointer_sniping_sensitivity(/*forward=*/keycode == KC_UP, /*side_peripheral=*/has_shift_mod());
+                    hk_cycle_pointer_sniping_sensitivity(/*forward=*/keycode == KC_UP, /*side_peripheral=*/hk_target_side_peripheral());
                 }
                 else if (g_hk_state.setting_scroll_throttle) {
-                    hk_cycle_pointer_scroll_throttle(/*forward=*/keycode == KC_UP, /*side_peripheral=*/has_shift_mod());
+                    hk_cycle_pointer_scroll_throttle(/*forward=*/keycode == KC_UP, /*side_peripheral=*/hk_target_side_peripheral());
                 }
                 propagate_event = false;
                 state_changed = true;
@@ -890,7 +939,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record) {
             // targeting the peripheral), leaving the pressed side stuck in the mode.
             static bool snipe_side_peripheral = false;
             if (record->event.pressed) {
-                snipe_side_peripheral = has_shift_mod();
+                snipe_side_peripheral = hk_target_side_peripheral();
             }
             hk_set_cursor_mode(/*mode=*/CURSOR_MODE_SNIPING, /*enabled=*/record->event.pressed, /*side_peripheral=*/snipe_side_peripheral);
             state_changed = true;
@@ -898,8 +947,8 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record) {
         }
         case HK_SNIPING_MODE_TOGGLE:
             if (record->event.pressed) {
-                bool is_on = hk_get_cursor_mode(/*side_peripheral=*/has_shift_mod()) == CURSOR_MODE_SNIPING;
-                hk_set_cursor_mode(/*mode=*/CURSOR_MODE_SNIPING, /*enabled=*/!is_on, /*side_peripheral=*/has_shift_mod());
+                bool is_on = hk_get_cursor_mode(/*side_peripheral=*/hk_target_side_peripheral()) == CURSOR_MODE_SNIPING;
+                hk_set_cursor_mode(/*mode=*/CURSOR_MODE_SNIPING, /*enabled=*/!is_on, /*side_peripheral=*/hk_target_side_peripheral());
                 state_changed = true;
             }
             break;
@@ -907,7 +956,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record) {
             // Same press-time latch as HK_SNIPING_MODE above.
             static bool dragscroll_side_peripheral = false;
             if (record->event.pressed) {
-                dragscroll_side_peripheral = has_shift_mod();
+                dragscroll_side_peripheral = hk_target_side_peripheral();
             }
             hk_set_dragscroll(/*enabled=*/record->event.pressed, /*side_peripheral=*/dragscroll_side_peripheral);
             state_changed = true;
@@ -915,20 +964,20 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record) {
         }
         case HK_DRAGSCROLL_MODE_TOGGLE:
             if (record->event.pressed) {
-                bool is_on = hk_get_dragscroll(/*side_peripheral=*/has_shift_mod());
-                hk_set_dragscroll(/*enabled=*/!is_on, /*side_peripheral=*/has_shift_mod());
+                bool is_on = hk_get_dragscroll(/*side_peripheral=*/hk_target_side_peripheral());
+                hk_set_dragscroll(/*enabled=*/!is_on, /*side_peripheral=*/hk_target_side_peripheral());
                 state_changed = true;
             }
             break;
         case HK_CYCLE_SCROLL_LOCK:
             if (record->event.pressed) {
-                hk_cycle_scroll_mode(/*side_peripheral=*/has_shift_mod());
+                hk_cycle_scroll_mode(/*side_peripheral=*/hk_target_side_peripheral());
                 state_changed = true;
             }
             break;
         case HK_INVERT_SCROLL_DIRECTION:
             if (record->event.pressed) {
-                hk_invert_scroll_direction(/*side_peripheral=*/has_shift_mod());
+                hk_invert_scroll_direction(/*side_peripheral=*/hk_target_side_peripheral());
                 state_changed = true;
             }
             break;
@@ -1055,6 +1104,7 @@ void housekeeping_task_user(void) {
 #ifdef HK_SPLIT_DETECT_POINTING
     if (is_keyboard_master()) {
         hk_detect_pointing_invoke();
+        hk_update_active_side();
     }
 #endif
 

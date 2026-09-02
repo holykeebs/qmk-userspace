@@ -82,6 +82,12 @@ typedef struct PACKED {
     bool setting_sniping_sensitivity : 1;
     bool setting_scroll_throttle : 1;
 
+    // Which half's pointer state the unshifted config keycodes and the OLED
+    // pointer panel act on: main (the master's) normally, peripheral when the
+    // master half has no pointing device. See hk_active_side_peripheral in
+    // holykeebs.c for when that happens; set on the master, split-synced.
+    bool active_is_peripheral : 1;
+
     hk_pointer_state_t main;
     hk_pointer_state_t peripheral;
 
@@ -93,3 +99,9 @@ typedef struct PACKED {
 #endif
 
 extern hk_state_t g_hk_state;
+
+// The pointer state the unshifted config keycodes and the OLED pointer panel
+// refer to (see hk_state_t.active_is_peripheral).
+static inline const hk_pointer_state_t* hk_active_pointer_state(void) {
+    return g_hk_state.active_is_peripheral ? &g_hk_state.peripheral : &g_hk_state.main;
+}

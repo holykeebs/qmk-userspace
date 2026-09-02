@@ -76,8 +76,13 @@ void hk_oled_render_pointer_state(void) {
     //  TPS43: -12  34   0   0
     //  CUR D: 1.0/5  ON LK:VT
 
+    // The panel follows the half the unshifted config keycodes act on: the
+    // master's device normally, the peripheral's when the master half has none
+    // (keyball61plus with USB in the ball-less half).
+    const hk_pointer_state_t* ps = hk_active_pointer_state();
+
     // 1st line, pointing device kind, mouse x, y, h, and v.
-    oled_write_P(pointer_kind_to_string(g_hk_state.main.pointer_kind), false);
+    oled_write_P(pointer_kind_to_string(ps->pointer_kind), false);
 
     oled_write(format_3d(g_hk_state.display.last_mouse.x), false);
     oled_write(format_3d(g_hk_state.display.last_mouse.y), false);
@@ -87,20 +92,20 @@ void hk_oled_render_pointer_state(void) {
     // 2nd line, cursor mode, default sensitivity, drag scroll mode, scroll lock mode, and scroll throttle.
     if (g_hk_state.setting_default_sensitivity) {
         oled_write_P(PSTR("CUR D\xB1"), false);
-        oled_write(format_sensitivity(g_hk_state.main.pointer_default_sensitivity), false);
+        oled_write(format_sensitivity(ps->pointer_default_sensitivity), false);
     } else if (g_hk_state.setting_sniping_sensitivity) {
         oled_write_P(PSTR("CUR S\xB1"), false);
-        oled_write(format_sensitivity(g_hk_state.main.pointer_sniping_sensitivity), false);
+        oled_write(format_sensitivity(ps->pointer_sniping_sensitivity), false);
     } else {
-        switch (g_hk_state.main.cursor_mode)
+        switch (ps->cursor_mode)
         {
             case CURSOR_MODE_DEFAULT:
                 oled_write_P(PSTR("CUR D\xB1"), false);
-                oled_write(format_sensitivity(g_hk_state.main.pointer_default_sensitivity), false);
+                oled_write(format_sensitivity(ps->pointer_default_sensitivity), false);
                 break;
             case CURSOR_MODE_SNIPING:
                 oled_write_P(PSTR("CUR S\xB1"), false);
-                oled_write(format_sensitivity(g_hk_state.main.pointer_sniping_sensitivity), false);
+                oled_write(format_sensitivity(ps->pointer_sniping_sensitivity), false);
                 break;
             default:
                 oled_write_P(PSTR("CUR ?\xB1"), false);
@@ -110,18 +115,18 @@ void hk_oled_render_pointer_state(void) {
 
     oled_write_char('/', false);
     // scroll throttle:
-    oled_write(format_2d(g_hk_state.main.pointer_scroll_throttle), false);
+    oled_write(format_2d(ps->pointer_scroll_throttle), false);
     oled_write_char(' ', false);
 
     // drag scroll mode: on/off
-    if (g_hk_state.main.drag_scroll) {
+    if (ps->drag_scroll) {
         oled_write_P(LFSTR_ON, false);
     } else {
         oled_write_P(LFSTR_OFF, false);
     }
 
     // scroll lock mode: "VT" (vertical), "HN" (horiozntal), and "NO" (free)
-    switch (g_hk_state.main.scroll_lock) {
+    switch (ps->scroll_lock) {
         case SCROLL_LOCK_VERTICAL:
             oled_write_ln_P(PSTR(" L:VT"), false);
             break;
