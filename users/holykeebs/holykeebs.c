@@ -1085,10 +1085,9 @@ static void hk_detect_pointing_invoke(void) {
 
 void housekeeping_task_user(void) {
 #if defined(SPLIT_POINTING_ENABLE) && defined(POINTING_DEVICE_COMBINED)
-    // The qmk_firmware base re-probes a local sensor that failed init for a
-    // short window after boot (pointing_device_retry_init); on the older vial
-    // base there's no retry and this just fires once at boot. A sensor that
-    // only answers on one of those retries missed the CPI push in
+    // Both QMK bases re-probe a local sensor that failed init for a short
+    // window after boot (pointing_device_retry_init). A sensor that only
+    // answers on one of those retries missed the CPI push in
     // keyboard_post_init_user and would run at the driver's compile-time
     // default, so push it again the first time the sensor is seen. A no-op for
     // devices whose sensitivity is a software multiplier.
